@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 # Crea un usuario en un realm de Keycloak vía Admin API.
 # El username se deriva de la parte local del email (antes de la @).
