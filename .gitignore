@@ -1,0 +1,23 @@
+# Evitar commitear cualquier secreto o configuración local
+.env
+*.env
+.env.*
+*.key
+*.pem
+*.p12
+*.kdbx
+*.keyx
+credentials
+*.secret
+
+# Salidas generadas por los scripts
+*.csv
+*.log
+canciones_guardadas.csv
+
+# Basura del sistema
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc

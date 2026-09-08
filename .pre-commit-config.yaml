@@ -1,0 +1,27 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-executables-have-shebangs
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: detect-private-key
+
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        # shellcheck no soporta zsh; los .zsh se excluyen del análisis
+        exclude: '\.zsh$'
+        args: [-x]
+
+  - repo: local
+    hooks:
+      - id: py-syntax
+        name: python syntax check (ast)
+        entry: python3 -c 'import ast,sys; [ast.parse(open(f).read(), f) for f in sys.argv[1:]]'
+        language: system
+        types: [python]
