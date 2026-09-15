@@ -28,8 +28,25 @@ kc_check_deps() {
 }
 
 # --- Seleccionar entorno con fzf ---
+# Si KC_ENVIRONMENTS está definido, se usa esa lista. Si no, los entornos se
+# detectan automáticamente desde LastPass a partir de las entradas
+# "[KC] ... administrador" (mismo patrón que usa kc_load_credentials).
 kc_select_environment() {
-  ENTORNO=$(echo "${KC_ENVIRONMENTS:-DEV PRE PRO}" | tr ' ' '\n' \
+  local env_list
+  if [[ -n "${KC_ENVIRONMENTS:-}" ]]; then
+    env_list=$(echo "$KC_ENVIRONMENTS" | tr ' ' '\n' | grep -v '^$')
+  else
+    env_list=$(lpass ls | grep "\[KC\]" | grep "administrador" \
+      | grep -oP '^\S*/\[\K[^]]+(?=\])' | sort -u)
+  fi
+
+  if [[ -z "$env_list" ]]; then
+    echo "ERROR: No se encontraron entornos de Keycloak en LastPass." >&2
+    echo "Define KC_ENVIRONMENTS manualmente si es necesario." >&2
+    return 1
+  fi
+
+  ENTORNO=$(echo "$env_list" \
     | fzf --prompt="Selecciona entorno: " --height=~10 --border --no-multi)
   if [[ -z "$ENTORNO" ]]; then
     echo "ERROR: No se seleccionó ningún entorno." >&2
@@ -86,7 +103,7 @@ kc_get_token() {
   elapsed=$(( ahora - KC_TOKEN_TIME ))
 
   if [[ -z "$ACCESS_TOKEN" || $elapsed -ge $KC_TOKEN_LIFETIME ]]; then
-    token_response=$(curl -s -X POST \
+    token_response=$(curl -s --max-time 30 -X POST \
       "${KEYCLOAK_URL}/realms/master/protocol/openid-connect/token" \
       -H "Content-Type: application/x-www-form-urlencoded" \
       -d "username=${ADMIN_USER}" \
