@@ -15,6 +15,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=keycloak/lib/kc_common.sh
+. "$SCRIPT_DIR/lib/kc_common.sh"
+
 # ─── Valores por defecto ───────────────────────────────────────────────────────
 KC_URL="https://kcdm2.loyaltysp.es:8443"
 REALM="DMA_9cg9hra0Y"
@@ -122,36 +126,25 @@ if [ -z "$USERNAME" ]; then
     error "Falta el usuario (-u/--username). Usa --help para ver las opciones."
 fi
 
-if [ -z "$PASSWORD" ]; then
-    echo -n "Password para $USERNAME: " >&2
-    read -rs PASSWORD
-    echo >&2
-fi
-
 # Verificar dependencias
-for cmd in curl jq; do
-    if ! command -v "$cmd" &>/dev/null; then
-        error "Se requiere '$cmd'. Instálalo antes de continuar."
-    fi
-done
+kc_check_deps curl jq || exit 1
 
-# ─── Obtener token ─────────────────────────────────────────────────────────────
+# ─── Obtener token (vía librería común) ────────────────────────────────────────
+# Este servidor puede usar certificados no verificables; mantenemos el modo TLS
+# inseguro que usaba el script original (curl -sk).
+export KC_AUTH_REALM="$AUTH_REALM"
+export KC_CLIENT_ID="$CLIENT_ID"
+export KC_INSECURE_TLS=true
 
 log "Obteniendo token de acceso desde $KC_URL/realms/$AUTH_REALM..."
 
-TOKEN_RESPONSE=$(curl -sk -X POST \
-    "$KC_URL/realms/$AUTH_REALM/protocol/openid-connect/token" \
-    -d "client_id=$CLIENT_ID" \
-    -d "username=$USERNAME" \
-    -d "password=$PASSWORD" \
-    -d "grant_type=password" 2>/dev/null)
+kc_set_credentials "$KC_URL" "$USERNAME" "$PASSWORD" >/dev/null
 
-TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.access_token // empty')
-
-if [ -z "$TOKEN" ]; then
-    ERROR_MSG=$(echo "$TOKEN_RESPONSE" | jq -r '.error_description // .error // "Respuesta desconocida"')
-    error "No se pudo obtener el token: $ERROR_MSG"
+if ! kc_get_token; then
+    error "No se pudo obtener el token de admin."
 fi
+
+TOKEN="$ACCESS_TOKEN"
 
 log "Token obtenido correctamente."
 

@@ -43,7 +43,8 @@ done
 [[ -z "$USERS_FILE" ]]  && { echo "ERROR: Falta -f (fichero de usuarios)." >&2; usage; }
 [[ ! -f "$USERS_FILE" ]] && { echo "ERROR: El fichero '$USERS_FILE' no existe." >&2; exit 1; }
 
-kc_check_deps
+kc_check_deps lpass curl jq fzf
+kc_check_lpass_session
 kc_select_environment
 kc_load_credentials "$ENTORNO"
 echo "Usuarios:  $USERS_FILE" >&2

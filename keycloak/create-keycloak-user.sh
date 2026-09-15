@@ -1,4 +1,6 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
+set -euo pipefail
 
 # Crea un usuario en un realm de Keycloak vía Admin API y, opcionalmente,
 # lo asocia a un grupo. El acceso inicial se resuelve de dos formas:
@@ -6,6 +8,13 @@
 #   - email:    se envía un correo con la acción UPDATE_PASSWORD para que
 #               el propio usuario defina su contraseña (requiere SMTP).
 # El username se deriva de la parte local del email.
+#
+# Las credenciales de admin se obtienen vía la librería común (modo manual),
+# a partir de variables de entorno: KEYCLOAK_URL, ADMIN_USER y ADMIN_PASS.
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=keycloak/lib/kc_common.sh
+. "$SCRIPT_DIR/lib/kc_common.sh"
 
 usage() {
   cat <<EOF
@@ -32,7 +41,7 @@ Configuración (variables de entorno):
   KEYCLOAK_URL   URL base de Keycloak (por defecto: http://localhost:8080)
   REALM          Realm destino (por defecto: master)
   ADMIN_USER     Usuario admin (por defecto: admin)
-  ADMIN_PASS     Password del admin (requerido)
+  ADMIN_PASS     Password del admin (si se omite, se pide interactivamente)
   GROUP          Grupo al que asociar el usuario (alternativa a -g)
   TEMP_PASSWORD  true (por defecto) => contraseña temporal; false => permanente
 
@@ -42,13 +51,13 @@ Ejemplos:
   $0 -e ofrutos@travelclub.es -m email
   $0 -e ofrutos@travelclub.es -m email -g mi-grupo
 
-Requiere: curl.
+Requiere: curl, jq.
 EOF
 }
 
-KEYCLOAK_URL="${KEYCLOAK_URL:-http://localhost:8080}"
+KC_URL_INPUT="${KEYCLOAK_URL:-http://localhost:8080}"
 REALM="${REALM:-master}"
-ADMIN_USER="${ADMIN_USER:-admin}"
+ADMIN_USER_INPUT="${ADMIN_USER:-admin}"
 TEMP_PASSWORD="${TEMP_PASSWORD:-true}"
 MODE="password"
 EMAIL=""
@@ -77,10 +86,8 @@ case "$MODE" in
   *) echo "Error: modo inválido '-m $MODE' (usa: password | email)." >&2; exit 1 ;;
 esac
 
-if [ -z "$ADMIN_PASS" ]; then
-  echo "Error: Define ADMIN_PASS"
-  exit 1
-fi
+kc_check_deps curl jq
+kc_set_credentials "$KC_URL_INPUT" "$ADMIN_USER_INPUT" "${ADMIN_PASS:-}"
 
 USERNAME="${EMAIL%%@*}"
 
@@ -97,16 +104,9 @@ json_value() {
   grep -o "\"$1\":\"[^\"]*" | head -n1 | cut -d'"' -f4
 }
 
-TOKEN=$(curl -s -X POST "$KEYCLOAK_URL/realms/master/protocol/openid-connect/token" \
-  -d "client_id=admin-cli" \
-  -d "username=$ADMIN_USER" \
-  -d "password=$ADMIN_PASS" \
-  -d "grant_type=password" | json_value access_token)
-
-if [ -z "$TOKEN" ]; then
-  echo "Error: no se pudo obtener el token de admin. Revisa ADMIN_USER/ADMIN_PASS y KEYCLOAK_URL." >&2
-  exit 1
-fi
+echo "Obteniendo token de admin..." >&2
+kc_get_token
+TOKEN="$ACCESS_TOKEN"
 
 # --- Crear el usuario ---
 RESPONSE=$(curl -s -w '\n%{http_code}' -X POST "$KEYCLOAK_URL/admin/realms/$REALM/users" \

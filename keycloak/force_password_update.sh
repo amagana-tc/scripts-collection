@@ -52,7 +52,8 @@ if [[ -n "$USERS_FILE" && ! -f "$USERS_FILE" ]]; then
   exit 1
 fi
 
-kc_check_deps
+kc_check_deps lpass curl jq fzf
+kc_check_lpass_session
 kc_select_environment
 kc_load_credentials "$ENTORNO"
 if [[ "$ALL_USERS" == true ]]; then
