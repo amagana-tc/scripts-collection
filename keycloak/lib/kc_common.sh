@@ -49,6 +49,34 @@ kc_curl_opts() {
   fi
 }
 
+# --- Generar contraseña aleatoria con complejidad garantizada ---
+# Uso: gen_password [longitud]  (por defecto 20; mínimo 4)
+# Garantiza al menos una minúscula, una mayúscula, un dígito y un símbolo,
+# y baraja el resultado para que las posiciones fijas no sean predecibles.
+gen_password() {
+  local length="${1:-20}"
+  [[ "$length" =~ ^[0-9]+$ ]] || length=20
+  (( length < 4 )) && length=4
+
+  local lower='abcdefghijklmnopqrstuvwxyz'
+  local upper='ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+  local digit='0123456789'
+  local symbol='!@#%&*'
+  local all="$lower$upper$digit$symbol"
+
+  # Un carácter de cada clase para cumplir la política de complejidad.
+  local pass=""
+  pass+=$(LC_ALL=C tr -dc "$lower"  < /dev/urandom | head -c 1)
+  pass+=$(LC_ALL=C tr -dc "$upper"  < /dev/urandom | head -c 1)
+  pass+=$(LC_ALL=C tr -dc "$digit"  < /dev/urandom | head -c 1)
+  pass+=$(LC_ALL=C tr -dc "$symbol" < /dev/urandom | head -c 1)
+  # El resto, aleatorio de todas las clases.
+  pass+=$(LC_ALL=C tr -dc "$all" < /dev/urandom | head -c "$(( length - 4 ))")
+
+  # Baraja los caracteres para no dejar las 4 clases en posiciones fijas.
+  printf '%s' "$pass" | fold -w1 | shuf | tr -d '\n'
+}
+
 # --- Comprobar dependencias ---
 # Uso: kc_check_deps [cmd...]  (por defecto comprueba curl y jq)
 kc_check_deps() {
@@ -67,7 +95,7 @@ kc_check_deps() {
 # --- Comprobar sesión de LastPass ---
 kc_check_lpass_session() {
   if ! lpass status -q 2>/dev/null; then
-    echo "ERROR: No estás logueado en LastPass. Ejecuta 'lpass login <email>' primero." >&2
+    echo "ERROR: No estás logueado en LastPass. Ejecuta 'lpass login <email> --trust' primero." >&2
     return 1
   fi
 }
@@ -249,4 +277,55 @@ kc_select_realm() {
     return 1
   fi
   echo "Realm seleccionado: $REALM" >&2
+}
+
+# --- Seleccionar un grupo del realm con fzf ---
+# Uso: kc_select_group  (requiere KEYCLOAK_URL, REALM y ACCESS_TOKEN)
+# Deja el nombre elegido en la variable global SELECTED_GROUP. Selección única.
+# Recorre también subgrupos y muestra la ruta completa (p.ej. padre/hijo), pero
+# devuelve el nombre del grupo (last path segment) para asignarlo por nombre.
+kc_select_group() {
+  SELECTED_GROUP=""
+  echo "Obteniendo grupos del realm '$REALM'..." >&2
+
+  local groups_response groups_list
+  # shellcheck disable=SC2046
+  groups_response=$(curl -s $(kc_curl_opts) -X GET \
+    "${KEYCLOAK_URL}/admin/realms/${REALM}/groups" \
+    --data-urlencode "max=1000" \
+    -G \
+    -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+    -H "Content-Type: application/json")
+
+  if ! echo "$groups_response" | jq -e 'type == "array"' &>/dev/null; then
+    echo "ERROR: No se pudieron obtener los grupos. Respuesta:" >&2
+    echo "$groups_response" | jq . 2>/dev/null >&2 || echo "$groups_response" >&2
+    return 1
+  fi
+
+  # Aplana la jerarquía: cada línea es "nombre\truta_completa".
+  groups_list=$(echo "$groups_response" | jq -r '
+    def walk_groups($prefix):
+      .[]? as $g
+      | ($prefix + $g.name) as $path
+      | "\($g.name)\t\($path)",
+        ($g.subGroups // [] | walk_groups($path + "/"));
+    walk_groups("")' | sort -t$'\t' -k2)
+
+  if [[ -z "$groups_list" ]]; then
+    echo "ERROR: No se encontraron grupos en el realm '$REALM'." >&2
+    return 1
+  fi
+
+  SELECTED_GROUP=$(echo "$groups_list" \
+    | awk -F'\t' '{printf "%s\t%s\n", $2, $1}' \
+    | fzf --prompt="Selecciona grupo: " --height=~20 --border --no-multi \
+          --with-nth=1 --delimiter='\t' \
+    | awk -F'\t' '{print $2}')
+
+  if [[ -z "$SELECTED_GROUP" ]]; then
+    echo "ERROR: No se seleccionó ningún grupo." >&2
+    return 1
+  fi
+  echo "Grupo seleccionado: $SELECTED_GROUP" >&2
 }
