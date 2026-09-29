@@ -2,9 +2,11 @@
 
 set -euo pipefail
 
-# Fuerza a los usuarios a cambiar su contraseña en el próximo login añadiendo
-# la required action UPDATE_PASSWORD. Admite una lista de usuarios (-f) o todos
-# los usuarios del realm (-a). El entorno y el realm se eligen con fzf.
+# Fuerza a los usuarios a re-verificar su email en el próximo login: marca el
+# email como no verificado (emailVerified=false) y añade la required action
+# VERIFY_EMAIL. Admite una lista de usuarios (-f) o todos los usuarios del
+# realm (-a). Opcionalmente (-s) envía el email de verificación en el momento,
+# sin esperar al siguiente login. El entorno y el realm se eligen con fzf.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=keycloak/lib/kc_common.sh
@@ -12,31 +14,35 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 USERS_FILE=""
 ALL_USERS=false
+SEND_EMAIL=false
 SINGLE_USER=""
 
 usage() {
   cat <<EOF
-Uso: $0 [-u <username> | -f <fichero_usuarios> | -a]
+Uso: $0 [-u <username> | -f <fichero_usuarios> | -a] [-s]
 
 Parámetros:
   -u    Un único username
   -f    Fichero con los usernames (uno por línea)
   -a    Aplicar a TODOS los usuarios del realm
+  -s    Enviar el email de verificación ahora (no esperar al próximo login)
   -h    Mostrar esta ayuda
 
 Ejemplos:
   $0 -u juan.perez
   $0 -f usuarios.txt
   $0 -a
+  $0 -u juan.perez -s
 EOF
   exit 1
 }
 
-while getopts ":u:f:ah" opt; do
+while getopts ":u:f:ash" opt; do
   case $opt in
     u) SINGLE_USER="$OPTARG" ;;
     f) USERS_FILE="$OPTARG" ;;
     a) ALL_USERS=true ;;
+    s) SEND_EMAIL=true ;;
     h) usage ;;
     :) echo "ERROR: La opción -$OPTARG requiere un valor." >&2; usage ;;
     *) echo "ERROR: Opción desconocida -$OPTARG." >&2; usage ;;
@@ -73,6 +79,9 @@ elif [[ -n "$SINGLE_USER" ]]; then
 else
   echo "Usuarios:  $USERS_FILE" >&2
 fi
+if [[ "$SEND_EMAIL" == true ]]; then
+  echo "Envío:     se enviará el email de verificación ahora" >&2
+fi
 
 echo "Obteniendo token de admin..." >&2
 kc_get_token
@@ -81,8 +90,8 @@ echo "Token obtenido correctamente." >&2
 kc_select_realm
 echo "---"
 
-# --- Añade UPDATE_PASSWORD a un usuario ---
-force_update_password() {
+# --- Marca el email como no verificado y añade VERIFY_EMAIL a un usuario ---
+force_verify_email() {
   local user_id="$1"
 
   local user_data
@@ -99,25 +108,41 @@ force_update_password() {
   local current_actions updated_actions http_code
   current_actions=$(echo "$user_data" | jq -r '.requiredActions')
 
-  if echo "$current_actions" | jq -e 'index("UPDATE_PASSWORD")' &>/dev/null; then
-    echo "YA TIENE UPDATE_PASSWORD"
-    return 0
+  # Añade VERIFY_EMAIL si no la tiene ya, y marca emailVerified=false.
+  if echo "$current_actions" | jq -e 'index("VERIFY_EMAIL")' &>/dev/null; then
+    updated_actions="$current_actions"
+  else
+    updated_actions=$(echo "$current_actions" | jq '. + ["VERIFY_EMAIL"]')
   fi
-
-  updated_actions=$(echo "$current_actions" | jq '. + ["UPDATE_PASSWORD"]')
 
   http_code=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
     "${KEYCLOAK_URL}/admin/realms/${REALM}/users/${user_id}" \
     -H "Authorization: Bearer ${ACCESS_TOKEN}" \
     -H "Content-Type: application/json" \
-    -d "{\"requiredActions\": ${updated_actions}}")
+    -d "{\"emailVerified\": false, \"requiredActions\": ${updated_actions}}")
 
-  if [[ "$http_code" == "204" ]]; then
-    echo "OK"
+  if [[ "$http_code" != "204" ]]; then
+    echo "ERROR (HTTP $http_code)"
+    return 1
+  fi
+
+  # Opcionalmente, disparar el email de verificación en el momento.
+  if [[ "$SEND_EMAIL" == true ]]; then
+    local send_code
+    send_code=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+      "${KEYCLOAK_URL}/admin/realms/${REALM}/users/${user_id}/send-verify-email" \
+      -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+      -H "Content-Type: application/json")
+    if [[ "$send_code" == "204" ]]; then
+      echo "OK (email enviado)"
+    else
+      echo "OK (marcado); ERROR al enviar email (HTTP $send_code)"
+    fi
     return 0
   fi
-  echo "ERROR (HTTP $http_code)"
-  return 1
+
+  echo "OK"
+  return 0
 }
 
 OK=0
@@ -149,7 +174,7 @@ process_username() {
     return 1
   fi
 
-  force_update_password "$user_id"
+  force_verify_email "$user_id"
 }
 
 if [[ -n "$SINGLE_USER" ]]; then

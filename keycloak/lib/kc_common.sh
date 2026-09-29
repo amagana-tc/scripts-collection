@@ -16,6 +16,7 @@
 #                                 "kc_check_deps lpass curl jq fzf".
 #   kc_check_lpass_session        Comprueba que hay sesión de LastPass abierta.
 #   kc_select_environment         Selecciona entorno con fzf (usa $KC_ENVIRONMENTS).
+#   kc_select_environments        Igual pero multiselección; deja el array ENTORNOS.
 #   kc_load_credentials <entorno> Obtiene ADMIN_USER/ADMIN_PASSWORD/KEYCLOAK_URL desde LastPass.
 #   kc_set_credentials <url> <user> [pass]
 #                                 Fija credenciales en modo manual. Si no se
@@ -24,6 +25,8 @@
 #   kc_get_token                  Rellena ACCESS_TOKEN (renovándolo si es necesario).
 #   kc_select_realm               Selecciona/valida el realm. Si REALM ya viene
 #                                 definido, no es interactivo; si no, usa fzf.
+#   kc_select_realms              Igual pero multiselección; deja el array REALMS.
+#                                 Si REALMS ya viene definido, no es interactivo.
 #
 # Requiere Bash. Los scripts que la usan hacen: . "$(dirname "$0")/lib/kc_common.sh"
 #
@@ -128,6 +131,36 @@ kc_select_environment() {
   echo "Entorno seleccionado: $ENTORNO" >&2
 }
 
+# --- Seleccionar uno o varios entornos con fzf (multiselección) ---
+# Igual que kc_select_environment pero permite marcar varios con TAB.
+# Deja el resultado en el array global ENTORNOS (uno o más entornos).
+kc_select_environments() {
+  local env_list
+  if [[ -n "${KC_ENVIRONMENTS:-}" ]]; then
+    env_list=$(echo "$KC_ENVIRONMENTS" | tr ' ' '\n' | grep -v '^$')
+  else
+    env_list=$(lpass ls | grep "\[KC\]" | grep "administrador" \
+      | grep -oP '^\S*/\[\K[^]]+(?=\])' | sort -u)
+  fi
+
+  if [[ -z "$env_list" ]]; then
+    echo "ERROR: No se encontraron entornos de Keycloak en LastPass." >&2
+    echo "Define KC_ENVIRONMENTS manualmente si es necesario." >&2
+    return 1
+  fi
+
+  # --multi permite marcar varios con TAB; fzf devuelve una línea por selección.
+  mapfile -t ENTORNOS < <(echo "$env_list" \
+    | fzf --prompt="Selecciona entorno(s) [TAB para varios]: " \
+          --height=~10 --border --multi)
+
+  if [[ ${#ENTORNOS[@]} -eq 0 ]]; then
+    echo "ERROR: No se seleccionó ningún entorno." >&2
+    return 1
+  fi
+  echo "Entornos seleccionados: ${ENTORNOS[*]}" >&2
+}
+
 # --- Cargar credenciales de admin desde LastPass ---
 # Uso: kc_load_credentials "<entorno>"
 kc_load_credentials() {
@@ -159,6 +192,11 @@ kc_load_credentials() {
     echo "ERROR: No se pudieron extraer todas las credenciales de LastPass." >&2
     return 1
   fi
+
+  # Al cambiar de credenciales/servidor hay que forzar un token nuevo: el token
+  # anterior pertenece a otro servidor y no sería válido aquí.
+  ACCESS_TOKEN=""
+  KC_TOKEN_TIME=0
 
   echo "Servidor:  $KEYCLOAK_URL" >&2
   echo "Usuario:   $ADMIN_USER" >&2
@@ -198,6 +236,10 @@ kc_set_credentials() {
   KEYCLOAK_URL="$url"
   ADMIN_USER="$user"
   ADMIN_PASSWORD="$pass"
+
+  # Al cambiar de credenciales/servidor hay que forzar un token nuevo.
+  ACCESS_TOKEN=""
+  KC_TOKEN_TIME=0
 
   echo "Servidor:  $KEYCLOAK_URL" >&2
   echo "Usuario:   $ADMIN_USER" >&2
@@ -277,6 +319,53 @@ kc_select_realm() {
     return 1
   fi
   echo "Realm seleccionado: $REALM" >&2
+}
+
+# --- Seleccionar uno o varios realms con fzf (multiselección) ---
+# Igual que kc_select_realm pero permite marcar varios con TAB.
+# Si REALMS ya está definido (array no vacío), se usa tal cual (no interactivo).
+# En otro caso lista los realms (excluyendo master) y se eligen con fzf.
+# Deja el resultado en el array global REALMS.
+kc_select_realms() {
+  # Bajo `set -u`, referirse a un array no declarado da error; lo declaramos.
+  declare -p REALMS &>/dev/null || REALMS=()
+  if [[ ${#REALMS[@]} -gt 0 ]]; then
+    echo "Realms: ${REALMS[*]}" >&2
+    return 0
+  fi
+
+  echo "Obteniendo realms disponibles..." >&2
+  local realms_response realms_list
+  # shellcheck disable=SC2046
+  realms_response=$(curl -s $(kc_curl_opts) -X GET \
+    "${KEYCLOAK_URL}/admin/realms" \
+    -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+    -H "Content-Type: application/json")
+
+  if ! echo "$realms_response" | jq -e 'type == "array"' &>/dev/null; then
+    echo "ERROR: No se pudieron obtener los realms. Respuesta:" >&2
+    echo "$realms_response" | jq . 2>/dev/null >&2 || echo "$realms_response" >&2
+    return 1
+  fi
+
+  realms_list=$(echo "$realms_response" | jq -r '.[] | select(.realm != "master") | "\(.realm)\t\(.displayName // "-")"' | sort)
+  if [[ -z "$realms_list" ]]; then
+    echo "ERROR: No se encontraron realms en el servidor." >&2
+    return 1
+  fi
+
+  # --multi permite marcar varios con TAB; nos quedamos con la 1ª columna (realm).
+  mapfile -t REALMS < <(echo "$realms_list" \
+    | awk -F'\t' '{printf "%-30s %s\n", $1, $2}' \
+    | fzf --prompt="Selecciona realm(s) [TAB para varios]: " \
+          --height=~20 --border --multi \
+    | awk '{print $1}')
+
+  if [[ ${#REALMS[@]} -eq 0 ]]; then
+    echo "ERROR: No se seleccionó ningún realm." >&2
+    return 1
+  fi
+  echo "Realms seleccionados: ${REALMS[*]}" >&2
 }
 
 # --- Seleccionar un grupo del realm con fzf ---
