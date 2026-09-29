@@ -428,7 +428,8 @@ kc_select_group() {
 #     hardcodeado en el código). Ver más abajo el fichero .env opcional.
 #   - dbname y puerto son comunes a todos los LSP2 (LSP / 5432).
 #   - Usuario y contraseña se leen de LastPass en la entrada "BBDD <ENTORNO>".
-#   - account_id depende del entorno (LSP2PRO=1; resto LSP2=0).
+# El account_id, en cambio, depende del REALM (no del entorno): 1 si el realm
+# empieza por "RPB"; 0 en otro caso (ver kc_db_account_id).
 # Los entornos MNC no tienen alta en BD (la resolución devuelve error).
 
 KC_DB_NAME="${KC_DB_NAME:-LSP}"
@@ -495,31 +496,51 @@ kc_db_host() {
   esac
 }
 
-# --- account_id según el entorno (LSP2PRO=1; resto LSP2=0). ---
+# --- account_id según el REALM: si empieza por "RPB" => 1; en otro caso => 0. ---
+# La comparación es insensible a mayúsculas/minúsculas y tolera espacios.
 kc_db_account_id() {
-  case "$1" in
-    LSP2PRO)                    echo "1" ;;
-    LSP2DES|LSP2PRE|LSP2PRO2)   echo "0" ;;
-    *)                          echo "" ;;
+  local realm="$1"
+  # Trim de espacios envolventes.
+  realm="${realm#"${realm%%[![:space:]]*}"}"
+  realm="${realm%"${realm##*[![:space:]]}"}"
+  # Prefijo en mayúsculas para comparar.
+  case "${realm^^}" in
+    RPB*) echo "1" ;;
+    *)    echo "0" ;;
+  esac
+}
+
+# --- ¿El entorno soporta alta en BD? Solo LSP2*. Devuelve 0 (sí) / 1 (no). ---
+kc_db_supported() {
+  local entorno="${1^^}"
+  case "$entorno" in
+    LSP2DES|LSP2PRE|LSP2PRO|LSP2PRO2) return 0 ;;
+    *) return 1 ;;
   esac
 }
 
 # --- Resuelve la conexión a la BD para un entorno. ---
 # Uso: kc_resolve_db "<entorno>"
-# Rellena DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD/DB_ACCOUNT_ID.
+# Rellena DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD.
+# NOTA: DB_ACCOUNT_ID NO se fija aquí: depende del REALM (regla RPB), que se
+# resuelve más tarde. Usa kc_db_account_id "<realm>" en el momento del INSERT.
 # Devuelve 1 si el entorno no soporta alta en BD (p.ej. MNC) o falta config.
 kc_resolve_db() {
   local entorno="$1"
-  local host account_id
+  local host
 
-  host="$(kc_db_host "$entorno")"
-  account_id="$(kc_db_account_id "$entorno")"
+  # Normaliza el entorno (trim + mayúsculas) para un mapeo robusto.
+  entorno="${entorno#"${entorno%%[![:space:]]*}"}"
+  entorno="${entorno%"${entorno##*[![:space:]]}"}"
+  entorno="${entorno^^}"
 
-  # Entorno sin soporte de BD (p. ej. MNC): account_id vacío.
-  if [[ -z "$account_id" ]]; then
+  # Entorno sin soporte de BD (p. ej. MNC).
+  if ! kc_db_supported "$entorno"; then
     echo "ERROR: el entorno '$entorno' no soporta alta en base de datos (solo LSP2*)." >&2
     return 1
   fi
+
+  host="$(kc_db_host "$entorno")"
 
   # Entorno LSP2 válido pero sin host configurado.
   if [[ -z "$host" ]]; then
@@ -548,9 +569,8 @@ kc_resolve_db() {
   DB_HOST="$host"
   DB_PORT="$KC_DB_PORT"
   DB_NAME="$KC_DB_NAME"
-  DB_ACCOUNT_ID="$account_id"
 
-  echo "BD:        $DB_HOST:$DB_PORT/$DB_NAME (account_id=$DB_ACCOUNT_ID, user=$DB_USER)" >&2
+  echo "BD:        $DB_HOST:$DB_PORT/$DB_NAME (user=$DB_USER)" >&2
 }
 
 # --- Cadena de conexión de psql (sin credenciales; la password va por PGPASSWORD). ---
@@ -565,13 +585,19 @@ kc_db_check() {
 }
 
 # --- Inserta un usuario en "LSP"."E00USR_USER". ---
-# Uso: kc_db_insert_user "<idp_user_id>" "<external_user_id>"
-# Usa DB_ACCOUNT_ID (resuelto por entorno). El resto de columnas son constantes
-# acordadas o defaults de la tabla. Devuelve 0 si el INSERT afecta a 1 fila.
-# Duplicados (violación de unique) => error (return 1).
+# Uso: kc_db_insert_user "<idp_user_id>" "<external_user_id>" "<account_id>"
+# El account_id se calcula a partir del REALM (kc_db_account_id "<realm>"):
+# realm que empieza por "RPB" => 1; en otro caso => 0.
+# El resto de columnas son constantes acordadas o defaults de la tabla.
+# Devuelve 0 si el INSERT afecta a 1 fila. Duplicados (unique) => error (1).
 kc_db_insert_user() {
-  local idp_user_id="$1" external_user_id="$2"
+  local idp_user_id="$1" external_user_id="$2" account_id="$3"
   local sql out rc
+
+  if [[ -z "$account_id" ]]; then
+    echo "ERROR: kc_db_insert_user requiere account_id (3er argumento)." >&2
+    return 1
+  fi
 
   # SQL parametrizado con variables de psql (evita inyección: se pasan como
   # literales via -v y :'var', que psql escapa correctamente).
@@ -587,7 +613,7 @@ SQL
 
   out=$(PGPASSWORD="$DB_PASSWORD" psql "$(kc_db_conninfo)" \
     --set ON_ERROR_STOP=1 \
-    -v account_id="$DB_ACCOUNT_ID" \
+    -v account_id="$account_id" \
     -v idp_user_id="$idp_user_id" \
     -v external_user_id="$external_user_id" \
     -tA <<SQL 2>&1

@@ -60,14 +60,23 @@ Los **hosts no están en el código**: se leen de variables de entorno
 `KC_DB_HOST_<ENTORNO>` o de un fichero no versionado `lib/.kc_db.env`
 (ver [Configuración de hosts](#configuración-de-hosts-kc_db_env)).
 
-Entornos con soporte de BD y su `account_id`:
+Entornos con soporte de BD (host por entorno):
 
-| Entorno | Variable de host | `account_id` |
-|---------|------------------|:------------:|
-| `LSP2DES`  | `KC_DB_HOST_LSP2DES`  | `0` |
-| `LSP2PRE`  | `KC_DB_HOST_LSP2PRE`  | `0` |
-| `LSP2PRO2` | `KC_DB_HOST_LSP2PRO2` | `0` |
-| `LSP2PRO`  | `KC_DB_HOST_LSP2PRO`  | `1` |
+| Entorno | Variable de host |
+|---------|------------------|
+| `LSP2DES`  | `KC_DB_HOST_LSP2DES`  |
+| `LSP2PRE`  | `KC_DB_HOST_LSP2PRE`  |
+| `LSP2PRO2` | `KC_DB_HOST_LSP2PRO2` |
+| `LSP2PRO`  | `KC_DB_HOST_LSP2PRO`  |
+
+El **`account_id` depende del REALM**, no del entorno:
+
+| Realm | `account_id` |
+|-------|:------------:|
+| empieza por `RPB` (p. ej. `RPB`, `RPB_LSP`) | `1` |
+| cualquier otro | `0` |
+
+La comparación del prefijo `RPB` es insensible a mayúsculas/minúsculas.
 
 > **Solo entornos LSP2\*.** Los entornos **MNC** (`MNCPRE`, `MNCPRO`) **no**
 > tienen alta en BD: si se pasa `-d` con un entorno MNC, se avisa y se omite el
@@ -114,7 +123,7 @@ Se insertan en `"LSP"."E00USR_USER"`:
 
 | Columna | Valor | Origen |
 |---------|-------|--------|
-| `account_id` | `1` para `LSP2PRO`; `0` para el resto de LSP2 | entorno |
+| `account_id` | `1` si el realm empieza por `RPB`; `0` en otro caso | realm |
 | `group_id` | `0` | constante |
 | `idp_user_id` | ID del usuario devuelto por Keycloak | Keycloak |
 | `external_user_id` | `username` (parte local del email) | derivado |
@@ -176,16 +185,20 @@ Funciones añadidas para el alta en BD:
 
 - `kc_db_host <entorno>` — host RDS del entorno, leído de `KC_DB_HOST_<ENTORNO>`
   (vacío si no está definido o el entorno no soporta BD).
-- `kc_db_account_id <entorno>` — `account_id` del entorno (vacío si no aplica).
+- `kc_db_supported <entorno>` — `0` si el entorno soporta alta en BD (LSP2\*), `1`
+  en otro caso.
+- `kc_db_account_id <realm>` — `account_id` según el **realm**: `1` si empieza por
+  `RPB` (case-insensitive), `0` en otro caso.
 - `kc_resolve_db <entorno>` — valida el entorno (solo LSP2\*), lee credenciales de
-  LastPass (`BBDD <ENTORNO>`) y rellena
-  `DB_HOST DB_PORT DB_NAME DB_USER DB_PASSWORD DB_ACCOUNT_ID`. Devuelve `1` si el
-  entorno no soporta BD.
+  LastPass (`BBDD <ENTORNO>`) y rellena `DB_HOST DB_PORT DB_NAME DB_USER
+  DB_PASSWORD`. **No** fija `account_id` (depende del realm). Devuelve `1` si el
+  entorno no soporta BD o falta el host.
 - `kc_db_conninfo` — cadena de conexión de `psql` (sin la contraseña, que va por
   `PGPASSWORD`).
 - `kc_db_check` — comprueba conectividad con la BD ya resuelta.
-- `kc_db_insert_user <idp_user_id> <external_user_id>` — ejecuta el INSERT
-  (parametrizado con variables de `psql`; duplicados → error).
+- `kc_db_insert_user <idp_user_id> <external_user_id> <account_id>` — ejecuta el
+  INSERT (parametrizado con variables de `psql`; duplicados → error). El
+  `account_id` se obtiene con `kc_db_account_id "<realm>"`.
 
 ---
 

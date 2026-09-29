@@ -216,13 +216,17 @@ if [ "$DRY_RUN" = true ]; then
   echo "Modo:     $MODE"
   if [ "$SAVE_DB" = true ]; then
     if [ -n "$ENVIRONMENT" ]; then
-      if [ -n "$(kc_db_host "$ENVIRONMENT")" ]; then
-        echo "Alta BD:  sí (entorno $ENVIRONMENT, tabla \"LSP\".\"E00USR_USER\", account_id=$(kc_db_account_id "$ENVIRONMENT"))"
+      if kc_db_supported "$ENVIRONMENT"; then
+        if [ -n "$REALM" ]; then
+          echo "Alta BD:  sí (entorno $ENVIRONMENT, tabla \"LSP\".\"E00USR_USER\", account_id=$(kc_db_account_id "$REALM") por realm '$REALM')"
+        else
+          echo "Alta BD:  sí (entorno $ENVIRONMENT); account_id se calcularía por realm (RPB* => 1; resto => 0)"
+        fi
       else
         echo "Alta BD:  se solicitó (-d) pero el entorno '$ENVIRONMENT' no soporta BD; se omitiría"
       fi
     else
-      echo "Alta BD:  sí, si el entorno elegido es LSP2* (se resolvería tras elegir entorno)"
+      echo "Alta BD:  sí, si el entorno elegido es LSP2* (account_id por realm: RPB* => 1; resto => 0)"
     fi
   fi
   if [ -n "$EMAIL_FILE" ]; then
@@ -306,6 +310,10 @@ fi
 # Para entornos sin BD (p.ej. MNC) se avisa y se desactiva el alta en BD.
 if [ "$SAVE_DB" = true ]; then
   if kc_resolve_db "$ENVIRONMENT"; then
+    # account_id depende del REALM (RPB* => 1; resto => 0). El realm ya está
+    # resuelto en este punto y es común a toda la ejecución.
+    DB_ACCOUNT_ID="$(kc_db_account_id "$REALM")"
+    echo "account_id (por realm '$REALM'): $DB_ACCOUNT_ID" >&2
     echo "Comprobando conectividad con la BD..." >&2
     if ! kc_db_check; then
       echo "Error: no se pudo conectar a la base de datos del entorno '$ENVIRONMENT'." >&2
@@ -475,7 +483,7 @@ process_user() {
 
   # --- Alta en base de datos (opcional, -d). Rollback si falla. ---
   if [ "$SAVE_DB" = true ]; then
-    if kc_db_insert_user "$user_id" "$username"; then
+    if kc_db_insert_user "$user_id" "$username" "$DB_ACCOUNT_ID"; then
       echo "Usuario $email dado de alta en la BD (\"LSP\".\"E00USR_USER\", account_id=$DB_ACCOUNT_ID)"
     else
       echo "Error: fallo al dar de alta a $email en la base de datos." >&2
