@@ -73,6 +73,13 @@ Opciones:
                     permanente (false). No afecta a la contraseña generada, que
                     siempre es temporal.
   -r <realm>        Realm destino. Si se omite, se elige con fzf (omitiendo master).
+  -d                Además de crear el usuario en Keycloak, darlo de alta en la
+                    base de datos PostgreSQL del entorno (tabla
+                    "LSP"."E00USR_USER"). Solo aplica a entornos LSP2* (para MNC
+                    se omite). La conexión se resuelve por entorno: host fijo,
+                    dbname=LSP, puerto=5432 y credenciales desde LastPass
+                    ('BBDD <ENTORNO>'). Si el INSERT falla, se hace rollback y
+                    se elimina el usuario recién creado en Keycloak.
   -n                Dry-run: muestra lo que haría sin llamar a la API
   -h                Mostrar esta ayuda
 
@@ -80,8 +87,9 @@ Ejemplos:
   $0 -e ofrutos@travelclub.es -f Oscar -l Frutos -E LSP2PRE -g mi-grupo
   $0 -F emails.txt -E LSP2PRE -g mi-grupo
   $0 -F emails.txt -E MNCPRO -m email -r mi-realm
+  $0 -F emails.txt -E LSP2PRE -g mi-grupo -d   # además, alta en BD
 
-Requiere: curl, jq, lpass y fzf (fzf solo si no se indica -E).
+Requiere: curl, jq, lpass y fzf (fzf solo si no se indica -E; psql solo con -d).
 EOF
 }
 
@@ -96,9 +104,10 @@ LAST_NAME=""
 DRY_RUN=false
 ENVIRONMENT=""
 EMAIL_FILE=""
+SAVE_DB=false
 
 # Los flags no requieren orden.
-while getopts "e:E:F:g:m:p:t:f:l:r:nh" opt; do
+while getopts "e:E:F:g:m:p:t:f:l:r:dnh" opt; do
   case "$opt" in
     e) EMAIL="$OPTARG" ;;
     E) ENVIRONMENT="$OPTARG" ;;
@@ -110,6 +119,7 @@ while getopts "e:E:F:g:m:p:t:f:l:r:nh" opt; do
     f) FIRST_NAME="$OPTARG" ;;
     l) LAST_NAME="$OPTARG" ;;
     r) REALM="$OPTARG" ;;
+    d) SAVE_DB=true ;;
     n) DRY_RUN=true ;;
     h) usage; exit 0 ;;
     *) usage; exit 1 ;;
@@ -163,11 +173,15 @@ esac
 
 # Dependencias: fzf solo es necesario si hay que elegir algo interactivamente
 # (entorno, realm o grupo). Si se pasan -E, -r y -g, no hace falta fzf.
-if [ -n "$ENVIRONMENT" ] && [ -n "$REALM" ] && [ -n "$GROUP" ]; then
-  kc_check_deps curl jq lpass
-else
-  kc_check_deps curl jq lpass fzf
+# psql solo es necesario si se pide alta en BD (-d).
+DEPS=(curl jq lpass)
+if ! { [ -n "$ENVIRONMENT" ] && [ -n "$REALM" ] && [ -n "$GROUP" ]; }; then
+  DEPS+=(fzf)
 fi
+if [ "$SAVE_DB" = true ]; then
+  DEPS+=(psql)
+fi
+kc_check_deps "${DEPS[@]}"
 
 # --- Valida el formato de un email. Devuelve 0 si es válido. ---
 valid_email() {
@@ -200,6 +214,17 @@ if [ "$DRY_RUN" = true ]; then
   echo "Realm:    ${REALM:-se elegiría con fzf (sin master)}"
   echo "Grupo:    ${GROUP:-se elegiría con fzf}"
   echo "Modo:     $MODE"
+  if [ "$SAVE_DB" = true ]; then
+    if [ -n "$ENVIRONMENT" ]; then
+      if [ -n "$(kc_db_host "$ENVIRONMENT")" ]; then
+        echo "Alta BD:  sí (entorno $ENVIRONMENT, tabla \"LSP\".\"E00USR_USER\", account_id=$(kc_db_account_id "$ENVIRONMENT"))"
+      else
+        echo "Alta BD:  se solicitó (-d) pero el entorno '$ENVIRONMENT' no soporta BD; se omitiría"
+      fi
+    else
+      echo "Alta BD:  sí, si el entorno elegido es LSP2* (se resolvería tras elegir entorno)"
+    fi
+  fi
   if [ -n "$EMAIL_FILE" ]; then
     echo "Origen:   fichero '$EMAIL_FILE'"
     echo "Usuarios a procesar (email => firstName / lastName):"
@@ -274,6 +299,22 @@ if [ -n "$GROUP" ]; then
     echo "Error: no se encontró el grupo '$GROUP' en el realm '$REALM'." >&2
     echo "No se ha creado ningún usuario." >&2
     exit 1
+  fi
+fi
+
+# Resolver la conexión a la BD UNA vez (si se pidió -d). Solo entornos LSP2*.
+# Para entornos sin BD (p.ej. MNC) se avisa y se desactiva el alta en BD.
+if [ "$SAVE_DB" = true ]; then
+  if kc_resolve_db "$ENVIRONMENT"; then
+    echo "Comprobando conectividad con la BD..." >&2
+    if ! kc_db_check; then
+      echo "Error: no se pudo conectar a la base de datos del entorno '$ENVIRONMENT'." >&2
+      echo "No se ha creado ningún usuario." >&2
+      exit 1
+    fi
+  else
+    echo "Aviso: el entorno '$ENVIRONMENT' no soporta alta en BD; se omite (-d)." >&2
+    SAVE_DB=false
   fi
 fi
 
@@ -395,6 +436,24 @@ process_user() {
     fi
   fi
 
+  # --- Rollback interno: elimina el usuario recién creado en Keycloak. ---
+  rollback_user() {
+    if [ "$user_created" != true ]; then
+      return 0
+    fi
+    echo "Rollback: eliminando el usuario '$username' recién creado..." >&2
+    local del_code
+    # shellcheck disable=SC2046
+    del_code=$(curl -s $(kc_curl_opts) -o /dev/null -w '%{http_code}' -X DELETE \
+      "$KEYCLOAK_URL/admin/realms/$REALM/users/$user_id" \
+      -H "Authorization: Bearer $TOKEN")
+    if [ "$del_code" = 204 ]; then
+      echo "Rollback: usuario '$username' eliminado." >&2
+    else
+      echo "Aviso: no se pudo eliminar el usuario en el rollback (HTTP $del_code). Revísalo manualmente." >&2
+    fi
+  }
+
   # --- Asociar al grupo (GROUP_ID ya validado). Rollback si falla tras crear. ---
   if [ -n "$GROUP" ]; then
     local grp_response grp_code grp_body
@@ -409,19 +468,18 @@ process_user() {
     else
       echo "Error: fallo al asociar $email al grupo '$GROUP' (HTTP $grp_code)." >&2
       [ -n "$grp_body" ] && echo "$grp_body" >&2
-      if [ "$user_created" = true ]; then
-        echo "Rollback: eliminando el usuario '$username' recién creado..." >&2
-        local del_code
-        # shellcheck disable=SC2046
-        del_code=$(curl -s $(kc_curl_opts) -o /dev/null -w '%{http_code}' -X DELETE \
-          "$KEYCLOAK_URL/admin/realms/$REALM/users/$user_id" \
-          -H "Authorization: Bearer $TOKEN")
-        if [ "$del_code" = 204 ]; then
-          echo "Rollback: usuario '$username' eliminado." >&2
-        else
-          echo "Aviso: no se pudo eliminar el usuario en el rollback (HTTP $del_code). Revísalo manualmente." >&2
-        fi
-      fi
+      rollback_user
+      return 1
+    fi
+  fi
+
+  # --- Alta en base de datos (opcional, -d). Rollback si falla. ---
+  if [ "$SAVE_DB" = true ]; then
+    if kc_db_insert_user "$user_id" "$username"; then
+      echo "Usuario $email dado de alta en la BD (\"LSP\".\"E00USR_USER\", account_id=$DB_ACCOUNT_ID)"
+    else
+      echo "Error: fallo al dar de alta a $email en la base de datos." >&2
+      rollback_user
       return 1
     fi
   fi
@@ -433,6 +491,7 @@ process_user() {
   echo "Email:    $email"
   echo "Nombre:   $first $last"
   [ -n "$GROUP" ] && echo "Grupo:    $GROUP"
+  [ "$SAVE_DB" = true ] && echo "BD:       alta en \"LSP\".\"E00USR_USER\" (account_id=$DB_ACCOUNT_ID)"
   if [ "$MODE" = password ] && [ "$failed" -eq 0 ]; then
     echo "Password: $gen_pass"
     [ "$pwd_temporary" = true ] && echo "          (temporal: debe cambiarla en el primer login)"

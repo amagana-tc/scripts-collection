@@ -54,9 +54,11 @@ keycloak/                      Keycloak / OIDC (admin API)
 ├── lib/
 │   └── kc_common.sh           Librería común: dependencias, selección de entorno
 │                              (fzf), credenciales desde LastPass, token con
-│                              renovación y selección de realm
+│                              renovación, selección de realm y alta en BD
+│                              PostgreSQL (solo entornos LSP2*)
 ├── get_keycloak_token.sh      access_token vía Authorization Code + prueba endpoint
-├── create-keycloak-user.sh    Crea un usuario en un realm (Admin API)
+├── create-keycloak-user.sh    Crea usuario(s) en un realm (Admin API); opción -d
+│                              para darlos de alta también en BD (ver keycloak/README.md)
 ├── keycloak_users_export.sh   Exporta usuarios de un realm (o de todos)
 ├── list_users.sh              Lista usernames de un realm (uno por línea, stdout)
 ├── reset_passwords.sh         Resetea contraseñas de una lista de usuarios

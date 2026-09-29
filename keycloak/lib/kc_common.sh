@@ -418,3 +418,187 @@ kc_select_group() {
   fi
   echo "Grupo seleccionado: $SELECTED_GROUP" >&2
 }
+
+
+# =====================================================================
+# Alta de usuarios en base de datos (PostgreSQL) — solo entornos LSP2.
+# =====================================================================
+# La conexión a la BD se resuelve por ENTORNO (no por realm):
+#   - El host se lee de la variable de entorno KC_DB_HOST_<ENTORNO> (no está
+#     hardcodeado en el código). Ver más abajo el fichero .env opcional.
+#   - dbname y puerto son comunes a todos los LSP2 (LSP / 5432).
+#   - Usuario y contraseña se leen de LastPass en la entrada "BBDD <ENTORNO>".
+#   - account_id depende del entorno (LSP2PRO=1; resto LSP2=0).
+# Los entornos MNC no tienen alta en BD (la resolución devuelve error).
+
+KC_DB_NAME="${KC_DB_NAME:-LSP}"
+KC_DB_PORT="${KC_DB_PORT:-5432}"
+KC_DB_SSLMODE="${KC_DB_SSLMODE:-require}"
+
+# --- Carga opcional de configuración de BD desde un fichero no versionado. ---
+# Por defecto se busca "<dir de esta librería>/.kc_db.env"; se puede cambiar con
+# la variable KC_DB_ENV_FILE. El fichero define, una por línea:
+#   KC_DB_HOST_LSP2DES=...
+#   KC_DB_HOST_LSP2PRE=...
+#   KC_DB_HOST_LSP2PRO=...
+#   KC_DB_HOST_LSP2PRO2=...
+# Las variables ya presentes en el entorno tienen prioridad sobre el fichero.
+kc_load_db_env() {
+  local self_dir env_file
+  # Directorio de esta librería (para localizar el .env por defecto).
+  self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  env_file="${KC_DB_ENV_FILE:-$self_dir/.kc_db.env}"
+
+  [[ -f "$env_file" ]] || return 0
+
+  # Lee KEY=VALUE ignorando comentarios y vacías. No sobrescribe lo ya definido
+  # en el entorno (así 'KC_DB_HOST_X=... ./script' tiene prioridad).
+  local line key val
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"   # ltrim
+    [[ -z "$line" ]] && continue
+    case "$line" in \#*) continue ;; esac
+    key="${line%%=*}"
+    val="${line#*=}"
+    # Quita comillas envolventes simples/dobles del valor, si las hay.
+    val="${val%\"}"; val="${val#\"}"
+    val="${val%\'}"; val="${val#\'}"
+    [[ -z "$key" ]] && continue
+    # Solo variables de conexión de BD reconocidas.
+    case "$key" in
+      KC_DB_HOST_*|KC_DB_NAME|KC_DB_PORT|KC_DB_SSLMODE)
+        if [[ -z "${!key:-}" ]]; then
+          printf -v "$key" '%s' "$val"
+          export "${key?}"
+        fi
+        ;;
+    esac
+  done < "$env_file"
+}
+kc_load_db_env
+
+# Variables públicas de salida (rellenadas por kc_resolve_db):
+#   DB_HOST DB_PORT DB_NAME DB_USER DB_PASSWORD DB_ACCOUNT_ID
+
+# --- Host de la BD según el entorno. Devuelve cadena vacía si no está definido. ---
+# El host se toma de la variable de entorno KC_DB_HOST_<ENTORNO> (p. ej.
+# KC_DB_HOST_LSP2PRE), definida en el entorno o en el fichero .kc_db.env.
+# El código NO contiene hosts reales (política del repositorio).
+kc_db_host() {
+  local entorno="$1" var
+  case "$entorno" in
+    LSP2DES|LSP2PRE|LSP2PRO|LSP2PRO2)
+      var="KC_DB_HOST_${entorno}"
+      echo "${!var:-}"
+      ;;
+    *) echo "" ;;
+  esac
+}
+
+# --- account_id según el entorno (LSP2PRO=1; resto LSP2=0). ---
+kc_db_account_id() {
+  case "$1" in
+    LSP2PRO)                    echo "1" ;;
+    LSP2DES|LSP2PRE|LSP2PRO2)   echo "0" ;;
+    *)                          echo "" ;;
+  esac
+}
+
+# --- Resuelve la conexión a la BD para un entorno. ---
+# Uso: kc_resolve_db "<entorno>"
+# Rellena DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD/DB_ACCOUNT_ID.
+# Devuelve 1 si el entorno no soporta alta en BD (p.ej. MNC) o falta config.
+kc_resolve_db() {
+  local entorno="$1"
+  local host account_id
+
+  host="$(kc_db_host "$entorno")"
+  account_id="$(kc_db_account_id "$entorno")"
+
+  # Entorno sin soporte de BD (p. ej. MNC): account_id vacío.
+  if [[ -z "$account_id" ]]; then
+    echo "ERROR: el entorno '$entorno' no soporta alta en base de datos (solo LSP2*)." >&2
+    return 1
+  fi
+
+  # Entorno LSP2 válido pero sin host configurado.
+  if [[ -z "$host" ]]; then
+    echo "ERROR: no hay host de BD configurado para '$entorno'." >&2
+    echo "Define la variable KC_DB_HOST_${entorno} (entorno o fichero .kc_db.env)." >&2
+    echo "Ejemplo: KC_DB_HOST_${entorno}=<host>.example.com" >&2
+    return 1
+  fi
+
+  # Credenciales desde LastPass: entrada con título "BBDD <ENTORNO>".
+  local lpass_entry lpass_id
+  lpass_entry=$(lpass ls | grep -iF "BBDD ${entorno}" | head -1)
+  if [[ -z "$lpass_entry" ]]; then
+    echo "ERROR: no se encontró la entrada de LastPass 'BBDD ${entorno}'." >&2
+    return 1
+  fi
+  lpass_id=$(echo "$lpass_entry" | grep -oP 'id: \K\d+')
+
+  DB_USER=$(lpass show --username "$lpass_id")
+  DB_PASSWORD=$(lpass show --password "$lpass_id")
+  if [[ -z "$DB_USER" || -z "$DB_PASSWORD" ]]; then
+    echo "ERROR: no se pudieron leer las credenciales de BD desde LastPass ('BBDD ${entorno}')." >&2
+    return 1
+  fi
+
+  DB_HOST="$host"
+  DB_PORT="$KC_DB_PORT"
+  DB_NAME="$KC_DB_NAME"
+  DB_ACCOUNT_ID="$account_id"
+
+  echo "BD:        $DB_HOST:$DB_PORT/$DB_NAME (account_id=$DB_ACCOUNT_ID, user=$DB_USER)" >&2
+}
+
+# --- Cadena de conexión de psql (sin credenciales; la password va por PGPASSWORD). ---
+kc_db_conninfo() {
+  printf 'host=%s port=%s dbname=%s user=%s sslmode=%s connect_timeout=10' \
+    "$DB_HOST" "$DB_PORT" "$DB_NAME" "$DB_USER" "$KC_DB_SSLMODE"
+}
+
+# --- Comprueba conectividad a la BD ya resuelta. Devuelve 0 si conecta. ---
+kc_db_check() {
+  PGPASSWORD="$DB_PASSWORD" psql "$(kc_db_conninfo)" -tAc "select 1;" >/dev/null 2>&1
+}
+
+# --- Inserta un usuario en "LSP"."E00USR_USER". ---
+# Uso: kc_db_insert_user "<idp_user_id>" "<external_user_id>"
+# Usa DB_ACCOUNT_ID (resuelto por entorno). El resto de columnas son constantes
+# acordadas o defaults de la tabla. Devuelve 0 si el INSERT afecta a 1 fila.
+# Duplicados (violación de unique) => error (return 1).
+kc_db_insert_user() {
+  local idp_user_id="$1" external_user_id="$2"
+  local sql out rc
+
+  # SQL parametrizado con variables de psql (evita inyección: se pasan como
+  # literales via -v y :'var', que psql escapa correctamente).
+  sql=$(cat <<'SQL'
+INSERT INTO "LSP"."E00USR_USER"
+  (account_id, group_id, idp_user_id, external_user_id, user_type_id,
+   user_profile_json, user_profile_update_time, user_json, create_time, system_user_idx)
+VALUES
+  (:account_id, 0, :'idp_user_id', :'external_user_id', 13200,
+   '{}'::jsonb, now(), '{}'::jsonb, now(), 0);
+SQL
+)
+
+  out=$(PGPASSWORD="$DB_PASSWORD" psql "$(kc_db_conninfo)" \
+    --set ON_ERROR_STOP=1 \
+    -v account_id="$DB_ACCOUNT_ID" \
+    -v idp_user_id="$idp_user_id" \
+    -v external_user_id="$external_user_id" \
+    -tA <<SQL 2>&1
+$sql
+SQL
+)
+  rc=$?
+
+  if [[ $rc -ne 0 ]]; then
+    echo "ERROR: fallo al insertar en la BD: $out" >&2
+    return 1
+  fi
+  return 0
+}
