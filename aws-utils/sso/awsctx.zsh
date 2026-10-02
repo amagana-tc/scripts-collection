@@ -23,7 +23,7 @@ function awsctx {
 
   # Si la identidad es válida, la sesión sigue activa; si no, login SSO.
   if aws sts get-caller-identity --profile "$profile" >/dev/null 2>&1; then
-    echo "Session $profile still valid"
+    echo "AWS session still valid"
   else
     aws sso login --use-device-code --profile "$profile"
   fi

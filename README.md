@@ -46,6 +46,12 @@ aws-utils/                     Utilidades de AWS, por tipología
     └── awsctx.zsh                Función zsh: cambia de perfil AWS SSO (fzf) y
                                   renueva la sesión si ha caducado
 
+credentials/                   Proveedores de credenciales (dado un nombre,
+│                              devuelven la contraseña por stdout; -j para JSON)
+├── get_lastpass.sh            Contraseña de una entrada de LastPass (lpass)
+├── get_aws_secret.sh          Contraseña de un secreto de AWS Secrets Manager
+└── get_gopass.sh              Contraseña de una entrada de gopass
+
 git/
 └── git_report.sh              Informe del estado de todos los repos Git de un
                                directorio, con sincronización interactiva
@@ -81,8 +87,14 @@ Los scripts de Keycloak (`list_users`, `reset_passwords`, `force_password_update
 obtienen las credenciales de administrador desde **LastPass** (`lpass`), buscando
 una entrada que contenga `[KC]`, `administrador` y `[<ENTORNO>]`.
 
+Los scripts de `credentials/` son **proveedores de contraseñas** con una interfaz
+común (`-s NOMBRE`, `-j` para JSON): dada una entrada, imprimen la contraseña por
+stdout. Útiles como helper en otros scripts (p.ej. `LPASS_ASKPASS`). Cada uno usa
+su fuente: `get_lastpass.sh` (LastPass), `get_aws_secret.sh` (AWS Secrets Manager)
+y `get_gopass.sh` (gopass).
+
 Herramientas externas que pueden requerirse: `aws` CLI, `jq`, `fzf`, `curl`,
-`git` y `lpass` (LastPass CLI).
+`git`, `lpass` (LastPass CLI) y `gopass`.
 
 ## Desarrollo
 

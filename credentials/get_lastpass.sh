@@ -8,7 +8,7 @@
 # Requiere tener sesión iniciada en lpass (lpass login USERNAME).
 #
 # Uso:
-#   lastpass_password.sh -s SEARCH [-j]
+#   get_lastpass.sh -s SEARCH [-j]
 #
 # Opciones:
 #   -s SEARCH      Nombre exacto de la entrada (obligatorio)

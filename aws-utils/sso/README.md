@@ -22,6 +22,8 @@ pueden pasar por flag o definir en un fichero `.env`. El perfil de AWS es
 - [`aws` CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) con perfiles SSO configurados.
 - [`fzf`](https://github.com/junegunn/fzf) (para elegir perfil de forma interactiva).
 - [`lpass`](https://github.com/lastpass/lastpass-cli) (LastPass CLI) — opcional; si no está instalado, se omite el login de LastPass.
+- [`gopass`](https://www.gopass.pw/) — opcional; solo si usas `GOPASS=yes` para
+  obtener la contraseña maestra de LastPass desde el store.
 
 ## Instalación
 
@@ -52,9 +54,52 @@ AWS_PROFILE=
 
 # Email de la cuenta de LastPass para 'lpass login'.
 LPASS_EMAIL=
+
+# Usar gopass para la contraseña maestra de LastPass ("yes" para activar).
+GOPASS=no
+
+# Ruta en gopass de la contraseña de LastPass (solo si GOPASS=yes).
+GOPASS_LPASS_PATH=ame/lastpass
 ```
 
 > `.env` está ignorado por git, así que no se versiona.
+
+### Integración con gopass (opcional)
+
+Si defines `GOPASS=yes` en el `.env`, `login` obtendrá la contraseña maestra de
+LastPass desde [`gopass`](https://www.gopass.pw/) (entrada `GOPASS_LPASS_PATH`,
+por defecto `ame/lastpass`) y la pasará a `lpass login` **sin pedirla de forma
+interactiva**.
+
+Cómo funciona por dentro:
+
+- `login` crea un helper temporal y lo expone a `lpass` mediante la variable
+  `LPASS_ASKPASS`; además fija `LPASS_DISABLE_PINENTRY=1` para evitar la ventana
+  gráfica de pinentry. `lpass` ejecuta ese helper, que a su vez hace
+  `gopass show -o <ruta>` y entrega la contraseña por stdout.
+- El helper temporal **no contiene la contraseña**: solo el comando
+  `gopass show -o`. Se borra siempre al terminar, incluso si cancelas con
+  `Ctrl-C` (hay un `trap` de limpieza).
+- La existencia de la entrada se comprueba con `gopass ls` (que **no** descifra),
+  de modo que `gopass` solo pide su passphrase **una vez**, al descifrar.
+
+Requisitos:
+
+- Tener `gopass` instalado e inicializado con la contraseña guardada:
+  ```zsh
+  gopass insert ame/lastpass   # primera línea = contraseña maestra de LastPass
+  ```
+- Si `gopass` no está instalado o la entrada no existe en el store, `login`
+  avisa y **cae al login interactivo** habitual (pedirá la contraseña).
+
+> **Nota sobre la passphrase de gopass**: si tu identidad (p.ej. age) está
+> protegida con passphrase, `gopass` la pedirá una vez por sesión al descifrar.
+> Para no teclearla en cada `login`, puedes activar el agente de gopass y darle
+> un tiempo de cacheo:
+> ```zsh
+> gopass config age.agent-enabled true
+> gopass config age.agent-timeout 3600   # segundos (0 = sin caducidad)
+> ```
 
 ## Uso
 
@@ -80,7 +125,10 @@ Flags:
 
 1. **LastPass**: si `lpass` está instalado y hay `LPASS_EMAIL`, comprueba la
    sesión (`lpass status`); si no está activa, hace `lpass login <email> --trust`.
-   Si falta el email o `lpass` no está instalado, se omite con un aviso.
+   Si `GOPASS=yes`, la contraseña maestra se obtiene de `gopass` (vía
+   `LPASS_ASKPASS`) sin pedirla de forma interactiva; si no, `lpass` la pide
+   como de costumbre. Si falta el email o `lpass` no está instalado, se omite
+   con un aviso.
 2. **AWS SSO**: carga `awsctx.zsh` y ejecuta `awsctx <perfil>`. El perfil es
    **obligatorio** (flag `-p` o `.env`); si falta, el script aborta con error.
    Si la identidad del perfil sigue siendo válida no hace nada; si no, lanza

@@ -6,7 +6,7 @@
 # coincidencia; si hay 0 o más de una, falla.
 #
 # Uso:
-#   aws_database_password.sh -p PROFILE -s SECRET_ID [-j]
+#   get_aws_secret.sh -p PROFILE -s SECRET_ID [-j]
 #
 # Opciones:
 #   -p PROFILE     Perfil de AWS a utilizar (obligatorio)
