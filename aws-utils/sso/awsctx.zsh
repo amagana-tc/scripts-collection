@@ -25,6 +25,6 @@ function awsctx {
   if aws sts get-caller-identity --profile "$profile" >/dev/null 2>&1; then
     echo "Session $profile still valid"
   else
-    aws sso login --no-browser --profile "$profile"
+    aws sso login --use-device-code --profile "$profile"
   fi
 }
