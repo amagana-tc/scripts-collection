@@ -8,21 +8,24 @@
 # Requiere tener sesión iniciada en lpass (lpass login USERNAME).
 #
 # Uso:
-#   lastpass_password.sh -s SEARCH
+#   lastpass_password.sh -s SEARCH [-j]
 #
 # Opciones:
 #   -s SEARCH      Nombre exacto de la entrada (obligatorio)
+#   -j             Devuelve la entrada completa en formato JSON
 #   -h             Muestra esta ayuda
 
 SEARCH=""
+JSON_OUTPUT=0
 
 usage() {
-  sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
 }
 
-while getopts ":s:h" opt; do
+while getopts ":s:jh" opt; do
   case "$opt" in
     s) SEARCH="$OPTARG" ;;
+    j) JSON_OUTPUT=1 ;;
     h) usage; exit 0 ;;
     \?) echo "Opción inválida: -$OPTARG" >&2; usage; exit 1 ;;
     :) echo "La opción -$OPTARG requiere un argumento" >&2; exit 1 ;;
@@ -47,4 +50,8 @@ fi
 
 RESOLVED_NAME="$MATCHES"
 
-lpass show --password "$RESOLVED_NAME"
+if [ "$JSON_OUTPUT" -eq 1 ]; then
+  lpass show --json "$RESOLVED_NAME"
+else
+  lpass show --password "$RESOLVED_NAME"
+fi
