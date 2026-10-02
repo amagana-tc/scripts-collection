@@ -1,0 +1,19 @@
+# Mapeo de grupo (-g) a user_type_id para el alta en BD (create-keycloak-user.sh).
+#
+# Copia este fichero a ".kc_user_types.map" (no versionado) y ajusta los valores:
+#
+#   cp .kc_user_types.map.example .kc_user_types.map
+#
+# Formato: una línea por grupo,  <grupo>=<user_type_id>
+#   - El <grupo> es el nombre tal cual se pasa con -g (sensible a may/min).
+#   - Se ignoran líneas vacías y las que empiezan por '#'.
+#   - Si un grupo no aparece aquí, el alta en BD falla con error (y rollback).
+#
+# El fichero se carga automáticamente desde lib/kc_common.sh. Puedes usar otra
+# ruta con: export KC_USER_TYPES_FILE=/ruta/a/mi.map
+
+admin=13200
+employee=13202
+agent=130202
+controller=130202
+user=13203

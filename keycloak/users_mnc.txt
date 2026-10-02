@@ -1,9 +1,0 @@
-ENTORNO  REALM          ID                                    USERNAME  ACTIVO  EMAIL                   VERIFICADO  TEMPORAL  GRUPOS
-
-MNCPRO   DMA_jasgOHQ3E  68c9dfb2-87f9-4d5d-a338-be6ef52d5093  anavarro  sí      anavarro@travelclub.es  sí          sí        BACKEND
-MNCPRO   DMA_jasgOHQ3E  10522c0b-1192-4a3e-8080-74d69ae3b0f2  edcaso    sí      edcaso@inloyalty.es     sí          sí        BACKEND
-MNCPRO   DMA_jasgOHQ3E  6e30095c-9af6-4e31-a10e-8be60c18562b  ofrutos   sí      ofrutos@inloyalty.es    sí          sí        BACKEND
-
-MNCPRE   DMA_jasgOHQ3E  c472a07a-215f-4955-8456-ef81c4bdc609  anavarro  sí      anavarro@travelclub.es  sí          sí        BACKEND
-MNCPRE   DMA_jasgOHQ3E  29723b01-4327-4952-afc2-9a5b77419709  edcaso    sí      edcaso@inloyalty.es     sí          sí        BACKEND
-MNCPRE   DMA_jasgOHQ3E  c7803562-4285-472b-8bb6-4a31d0cc24c0  ofrutos   sí      ofrutos@inloyalty.es    sí          sí        BACKEND

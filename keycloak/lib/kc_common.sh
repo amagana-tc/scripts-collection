@@ -479,7 +479,70 @@ kc_load_db_env() {
 kc_load_db_env
 
 # Variables públicas de salida (rellenadas por kc_resolve_db):
-#   DB_HOST DB_PORT DB_NAME DB_USER DB_PASSWORD DB_ACCOUNT_ID
+#   DB_HOST DB_PORT DB_NAME DB_USER DB_PASSWORD
+# (account_id NO lo fija kc_resolve_db: depende del realm, ver kc_db_account_id.)
+
+# --- user_type_id según el grupo (-g), desde un fichero de mapeo editable. ---
+# Fuente: fichero "grupo=user_type_id" (una línea por grupo). Por defecto se
+# busca "<dir de esta librería>/.kc_user_types.map"; se puede cambiar con la
+# variable KC_USER_TYPES_FILE. Si el grupo no está mapeado, devuelve error (1),
+# de modo que el llamador pueda abortar/rollback.
+#
+# El mapa se carga una sola vez en el array asociativo KC_USER_TYPES.
+declare -A KC_USER_TYPES=()
+KC_USER_TYPES_LOADED=false
+
+kc_load_user_types() {
+  [[ "$KC_USER_TYPES_LOADED" == true ]] && return 0
+
+  local self_dir map_file
+  self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  map_file="${KC_USER_TYPES_FILE:-$self_dir/.kc_user_types.map}"
+
+  if [[ ! -f "$map_file" ]]; then
+    echo "ERROR: no se encontró el fichero de mapeo de tipos de usuario '$map_file'." >&2
+    echo "Copia la plantilla: cp $self_dir/.kc_user_types.map.example $map_file" >&2
+    return 1
+  fi
+
+  local line key val
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"   # ltrim
+    line="${line%"${line##*[![:space:]]}"}"    # rtrim
+    [[ -z "$line" ]] && continue
+    case "$line" in \#*) continue ;; esac
+    key="${line%%=*}"
+    val="${line#*=}"
+    # Trim de key/val.
+    key="${key%"${key##*[![:space:]]}"}"; key="${key#"${key%%[![:space:]]*}"}"
+    val="${val%"${val##*[![:space:]]}"}"; val="${val#"${val%%[![:space:]]*}"}"
+    [[ -z "$key" ]] && continue
+    KC_USER_TYPES["$key"]="$val"
+  done < "$map_file"
+
+  KC_USER_TYPES_LOADED=true
+}
+
+# --- Devuelve el user_type_id de un grupo. Uso: kc_user_type_id "<grupo>" ---
+# Imprime el valor por stdout y devuelve 0 si existe; error (1) si no está
+# mapeado o no es un entero.
+kc_user_type_id() {
+  local group="$1" val
+  kc_load_user_types || return 1
+
+  if [[ -z "${KC_USER_TYPES[$group]+x}" ]]; then
+    echo "ERROR: el grupo '$group' no tiene user_type_id en el mapeo." >&2
+    echo "Añádelo al fichero de mapeo (.kc_user_types.map): ${group}=<codigo>." >&2
+    return 1
+  fi
+
+  val="${KC_USER_TYPES[$group]}"
+  if [[ ! "$val" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: user_type_id inválido para el grupo '$group': '$val' (debe ser un entero)." >&2
+    return 1
+  fi
+  printf '%s' "$val"
+}
 
 # --- Host de la BD según el entorno. Devuelve cadena vacía si no está definido. ---
 # El host se toma de la variable de entorno KC_DB_HOST_<ENTORNO> (p. ej.
@@ -585,17 +648,21 @@ kc_db_check() {
 }
 
 # --- Inserta un usuario en "LSP"."E00USR_USER". ---
-# Uso: kc_db_insert_user "<idp_user_id>" "<external_user_id>" "<account_id>"
-# El account_id se calcula a partir del REALM (kc_db_account_id "<realm>"):
-# realm que empieza por "RPB" => 1; en otro caso => 0.
+# Uso: kc_db_insert_user "<idp_user_id>" "<external_user_id>" "<account_id>" "<user_type_id>"
+#   - account_id: según el REALM (kc_db_account_id "<realm>"): RPB* => 1; resto => 0.
+#   - user_type_id: según el GRUPO (kc_user_type_id "<grupo>"), del fichero de mapeo.
 # El resto de columnas son constantes acordadas o defaults de la tabla.
 # Devuelve 0 si el INSERT afecta a 1 fila. Duplicados (unique) => error (1).
 kc_db_insert_user() {
-  local idp_user_id="$1" external_user_id="$2" account_id="$3"
+  local idp_user_id="$1" external_user_id="$2" account_id="$3" user_type_id="$4"
   local sql out rc
 
   if [[ -z "$account_id" ]]; then
     echo "ERROR: kc_db_insert_user requiere account_id (3er argumento)." >&2
+    return 1
+  fi
+  if [[ -z "$user_type_id" ]]; then
+    echo "ERROR: kc_db_insert_user requiere user_type_id (4º argumento)." >&2
     return 1
   fi
 
@@ -606,7 +673,7 @@ INSERT INTO "LSP"."E00USR_USER"
   (account_id, group_id, idp_user_id, external_user_id, user_type_id,
    user_profile_json, user_profile_update_time, user_json, create_time, system_user_idx)
 VALUES
-  (:account_id, 0, :'idp_user_id', :'external_user_id', 13200,
+  (:account_id, 0, :'idp_user_id', :'external_user_id', :user_type_id,
    '{}'::jsonb, now(), '{}'::jsonb, now(), 0);
 SQL
 )
@@ -614,6 +681,7 @@ SQL
   out=$(PGPASSWORD="$DB_PASSWORD" psql "$(kc_db_conninfo)" \
     --set ON_ERROR_STOP=1 \
     -v account_id="$account_id" \
+    -v user_type_id="$user_type_id" \
     -v idp_user_id="$idp_user_id" \
     -v external_user_id="$external_user_id" \
     -tA <<SQL 2>&1

@@ -78,8 +78,12 @@ Opciones:
                     "LSP"."E00USR_USER"). Solo aplica a entornos LSP2* (para MNC
                     se omite). La conexión se resuelve por entorno: host fijo,
                     dbname=LSP, puerto=5432 y credenciales desde LastPass
-                    ('BBDD <ENTORNO>'). Si el INSERT falla, se hace rollback y
-                    se elimina el usuario recién creado en Keycloak.
+                    ('BBDD <ENTORNO>'). El account_id se deriva del realm (1 si
+                    empieza por RPB; 0 en otro caso) y el user_type_id del grupo
+                    (-g), según el fichero de mapeo lib/.kc_user_types.map. El
+                    grupo es obligatorio y debe estar mapeado; si no, se aborta.
+                    Si el INSERT falla, se hace rollback y se elimina el usuario
+                    recién creado en Keycloak.
   -n                Dry-run: muestra lo que haría sin llamar a la API
   -h                Mostrar esta ayuda
 
@@ -228,6 +232,18 @@ if [ "$DRY_RUN" = true ]; then
     else
       echo "Alta BD:  sí, si el entorno elegido es LSP2* (account_id por realm: RPB* => 1; resto => 0)"
     fi
+    # user_type_id por grupo (si ya se conoce el grupo).
+    if kc_db_supported "${ENVIRONMENT:-__none__}" || [ -z "$ENVIRONMENT" ]; then
+      if [ -n "$GROUP" ]; then
+        if _utid="$(kc_user_type_id "$GROUP" 2>/dev/null)"; then
+          echo "user_type_id: $_utid (por grupo '$GROUP')"
+        else
+          echo "user_type_id: el grupo '$GROUP' NO está mapeado; el alta fallaría (revisa .kc_user_types.map)"
+        fi
+      else
+        echo "user_type_id: se determinará por el grupo elegido (-g); el grupo debe estar mapeado"
+      fi
+    fi
   fi
   if [ -n "$EMAIL_FILE" ]; then
     echo "Origen:   fichero '$EMAIL_FILE'"
@@ -314,6 +330,20 @@ if [ "$SAVE_DB" = true ]; then
     # resuelto en este punto y es común a toda la ejecución.
     DB_ACCOUNT_ID="$(kc_db_account_id "$REALM")"
     echo "account_id (por realm '$REALM'): $DB_ACCOUNT_ID" >&2
+
+    # user_type_id depende del GRUPO (-g), desde el fichero de mapeo. Se exige
+    # un grupo mapeado: si no, se aborta antes de crear nada.
+    if [ -z "$GROUP" ]; then
+      echo "Error: el alta en BD (-d) requiere un grupo (-g) para determinar user_type_id." >&2
+      echo "No se ha creado ningún usuario." >&2
+      exit 1
+    fi
+    if ! DB_USER_TYPE_ID="$(kc_user_type_id "$GROUP")"; then
+      echo "No se ha creado ningún usuario." >&2
+      exit 1
+    fi
+    echo "user_type_id (por grupo '$GROUP'): $DB_USER_TYPE_ID" >&2
+
     echo "Comprobando conectividad con la BD..." >&2
     if ! kc_db_check; then
       echo "Error: no se pudo conectar a la base de datos del entorno '$ENVIRONMENT'." >&2
@@ -483,8 +513,8 @@ process_user() {
 
   # --- Alta en base de datos (opcional, -d). Rollback si falla. ---
   if [ "$SAVE_DB" = true ]; then
-    if kc_db_insert_user "$user_id" "$username" "$DB_ACCOUNT_ID"; then
-      echo "Usuario $email dado de alta en la BD (\"LSP\".\"E00USR_USER\", account_id=$DB_ACCOUNT_ID)"
+    if kc_db_insert_user "$user_id" "$username" "$DB_ACCOUNT_ID" "$DB_USER_TYPE_ID"; then
+      echo "Usuario $email dado de alta en la BD (\"LSP\".\"E00USR_USER\", account_id=$DB_ACCOUNT_ID, user_type_id=$DB_USER_TYPE_ID)"
     else
       echo "Error: fallo al dar de alta a $email en la base de datos." >&2
       rollback_user
@@ -499,7 +529,7 @@ process_user() {
   echo "Email:    $email"
   echo "Nombre:   $first $last"
   [ -n "$GROUP" ] && echo "Grupo:    $GROUP"
-  [ "$SAVE_DB" = true ] && echo "BD:       alta en \"LSP\".\"E00USR_USER\" (account_id=$DB_ACCOUNT_ID)"
+  [ "$SAVE_DB" = true ] && echo "BD:       alta en \"LSP\".\"E00USR_USER\" (account_id=$DB_ACCOUNT_ID, user_type_id=$DB_USER_TYPE_ID)"
   if [ "$MODE" = password ] && [ "$failed" -eq 0 ]; then
     echo "Password: $gen_pass"
     [ "$pwd_temporary" = true ] && echo "          (temporal: debe cambiarla en el primer login)"

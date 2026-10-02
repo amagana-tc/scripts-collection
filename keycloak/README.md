@@ -4,6 +4,99 @@ Scripts para administrar usuarios en Keycloak vía Admin API. Las credenciales d
 administrador se obtienen de **LastPass** y el token se renueva automáticamente
 (ver `lib/kc_common.sh`).
 
+## `list_users.sh`
+
+Lista los usuarios de uno o varios realms de Keycloak. El entorno y el realm se
+seleccionan interactivamente con `fzf` (multiselección con TAB en ambos); con
+varias combinaciones se recorren todas y las filas se prefijan con entorno y
+realm.
+
+La salida por defecto es **CSV con delimitador `;`** (apta para pipes y hojas de
+cálculo); con `-p` se muestra una **tabla legible** alineada. Los mensajes
+informativos van por `stderr`, de modo que la salida de datos queda limpia.
+
+### Opciones
+
+| Flag | Descripción |
+|------|-------------|
+| `-a` | **Modo auditoría:** añade tres columnas de fechas (ver abajo) |
+| `-p` | Visualización legible: tabla alineada en columnas |
+| `-h` | Ayuda |
+
+Requiere: `curl`, `jq`, `lpass` y `fzf`.
+
+### Campos de salida
+
+Por defecto, una línea por usuario con:
+
+```
+entorno;realm;id;username;activo;email;email_verificado;temporal;grupos
+```
+
+- `activo`: `sí`/`no`, si la cuenta está habilitada.
+- `email_verificado`: `sí`/`no`.
+- `temporal`: `sí`/`no`, si la contraseña es temporal (required action
+  `UPDATE_PASSWORD`).
+- `grupos`: nombres separados por comas; vacío si no pertenece a ninguno.
+
+Los campos con `;`, comillas o saltos de línea se entrecomillan según CSV.
+
+### Modo auditoría (`-a`)
+
+Con `-a` se añaden **tres columnas de fechas** al final de cada fila:
+
+```
+...;grupos;fecha_alta;ultimo_login;ultimo_intento
+```
+
+| Columna | Significado | Origen |
+|---------|-------------|--------|
+| `fecha_alta` | Fecha de creación de la cuenta | `createdTimestamp` del usuario |
+| `ultimo_login` | Último login **correcto** | evento `LOGIN` más reciente |
+| `ultimo_intento` | Último intento de login (exitoso **o** fallido) | el más reciente entre `LOGIN` y `LOGIN_ERROR` |
+
+Formato de fecha: `YYYY-MM-DD HH:MM:SS` en **hora local**. Si no hay evento en la
+ventana consultada, el campo queda **vacío** (`fecha_alta` siempre tiene valor).
+
+> **Importante (retención de eventos).** `ultimo_login` y `ultimo_intento` se
+> obtienen de los **eventos de login** de Keycloak, por lo que dependen de que
+> estén **habilitados** en el realm y de su **retención** (los eventos antiguos
+> se purgan; la retención habitual es de **~90 días**). Un login anterior a la
+> ventana de retención ya **no** aparecerá. En realms con los eventos
+> deshabilitados, ambos campos saldrán vacíos.
+
+Por eficiencia, los eventos se consultan **una sola vez por realm** (una llamada
+para `LOGIN` y otra para `LOGIN_ERROR`), no por usuario. Fuera del modo
+auditoría **no** se consultan eventos (sin sobrecarga).
+
+### Variables de entorno relacionadas
+
+| Variable | Por defecto | Uso |
+|----------|-------------|-----|
+| `KC_EVENTS_MAX` | `100000` | Nº máx. de eventos de login recuperados por realm en modo auditoría |
+| `KC_CONCURRENCY` | `16` | Peticiones de grupos en paralelo por usuario |
+
+### Ejemplos
+
+```bash
+# Elegir entorno(s) y realm(s) con fzf; salida CSV ';'
+./list_users.sh
+
+# Tabla legible
+./list_users.sh -p
+
+# Auditoría (con fechas) en CSV, guardando a fichero
+./list_users.sh -a > auditoria.csv
+
+# Auditoría en tabla legible
+./list_users.sh -a -p
+
+# CSV filtrado con otras herramientas
+./list_users.sh | column -t -s ';'
+```
+
+---
+
 ## `create-keycloak-user.sh`
 
 Crea uno o varios usuarios (habilitados) en un realm de Keycloak y, opcionalmente:
@@ -127,7 +220,7 @@ Se insertan en `"LSP"."E00USR_USER"`:
 | `group_id` | `0` | constante |
 | `idp_user_id` | ID del usuario devuelto por Keycloak | Keycloak |
 | `external_user_id` | `username` (parte local del email) | derivado |
-| `user_type_id` | `13200` | constante |
+| `user_type_id` | según el **grupo** (`-g`), del fichero de mapeo | grupo |
 | `user_profile_json` | `{}` | constante |
 | `user_json` | `{}` | constante |
 | `user_profile_update_time` | `now()` | constante |
@@ -140,6 +233,33 @@ Las columnas con valor por defecto en la tabla se omiten y las asigna la BD:
 `user_idx` es autogenerado por secuencia.
 
 No se almacena ninguna contraseña en la base de datos.
+
+### `user_type_id` según el grupo (`.kc_user_types.map`)
+
+El `user_type_id` se determina por el **grupo** (`-g`) mediante un fichero de
+mapeo editable, para poder cambiar códigos o añadir grupos sin tocar el código:
+
+```bash
+cp lib/.kc_user_types.map.example lib/.kc_user_types.map
+# edita lib/.kc_user_types.map
+```
+
+Formato `grupo=user_type_id` (una línea por grupo; `#` para comentarios):
+
+```
+admin=13200
+employee=13202
+agent=130202
+controller=130202
+user=13203
+```
+
+Reglas:
+- El **grupo es obligatorio** con `-d` y **debe estar mapeado**; si no lo está
+  (o no se pasa `-g`), el proceso se aborta antes de crear nada.
+- El valor debe ser un entero.
+- Ruta configurable con `KC_USER_TYPES_FILE`. El fichero `.kc_user_types.map`
+  está en `.gitignore`; se versiona solo `.kc_user_types.map.example`.
 
 ### Comportamiento transaccional
 
@@ -196,9 +316,13 @@ Funciones añadidas para el alta en BD:
 - `kc_db_conninfo` — cadena de conexión de `psql` (sin la contraseña, que va por
   `PGPASSWORD`).
 - `kc_db_check` — comprueba conectividad con la BD ya resuelta.
-- `kc_db_insert_user <idp_user_id> <external_user_id> <account_id>` — ejecuta el
-  INSERT (parametrizado con variables de `psql`; duplicados → error). El
-  `account_id` se obtiene con `kc_db_account_id "<realm>"`.
+- `kc_user_type_id <grupo>` — devuelve el `user_type_id` del grupo según el
+  fichero `.kc_user_types.map`; error si el grupo no está mapeado o el valor no
+  es entero.
+- `kc_db_insert_user <idp_user_id> <external_user_id> <account_id> <user_type_id>`
+  — ejecuta el INSERT (parametrizado con variables de `psql`; duplicados →
+  error). El `account_id` se obtiene con `kc_db_account_id "<realm>"` y el
+  `user_type_id` con `kc_user_type_id "<grupo>"`.
 
 ---
 

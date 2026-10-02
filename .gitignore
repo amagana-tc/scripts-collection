@@ -10,6 +10,10 @@
 credentials
 *.secret
 
+# Mapeo local de grupo -> user_type_id (no versionar; sí la plantilla .example)
+.kc_user_types.map
+!*.map.example
+
 # Salidas generadas por los scripts
 *.csv
 *.log
