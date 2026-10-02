@@ -1,40 +1,97 @@
-#!/bin/bash
+#!/usr/bin/env bash
+#
+# export_keycloak_secrets.sh
+# Exporta entradas de LastPass a ficheros JSON (una por entrada), a partir de una
+# lista de IDs de LastPass. Pensado para volcar "secret notes" de Keycloak u
+# otros secretos almacenados en LastPass.
+#
+# Los IDs NO van hardcodeados: se leen de un fichero (-f), de argumentos
+# posicionales o de stdin (uno por línea).
+#
+# Uso:
+#   ./export_keycloak_secrets.sh -f ids.txt
+#   ./export_keycloak_secrets.sh 123456789 987654321
+#   lpass ls | awk '...' | ./export_keycloak_secrets.sh
+#
+# Opciones:
+#   -f FICHERO   Fichero con los IDs de LastPass (uno por línea)
+#   -o DIR       Directorio de salida (por defecto: keycloak_secrets)
+#   -h           Muestra esta ayuda
+#
+# Requiere: lpass (con sesión iniciada), jq.
 
-ids=(
-  "5031766102323864971"
-  "4579110970591953092"
-  "8619471503062484123"
-  "4225926977040394325"
-  "4530765718823710415"
-  "9172488018226465980"
-  "5745460449448171119"
-  "1806702327042177057"
-  "810451154779788553"
-  "4566812852329537376"
-  "3553314860626750103"
-  "7913890364047571289"
-  "6223342041268200278"
-  "5871886479702710959"
-  "7188343349654654228"
-  "8623522462014428086"
-  "3471218331130216289"
-  "7319068025416113257"
-  "7339482981424977698"
-  "3273769261752184318"
-  "595903479459539941"
-  "365685678112870017"
-  "2184342785529403731"
-  "5624321317846327873"
-)
+set -euo pipefail
 
-mkdir -p keycloak_secrets
+OUTPUT_DIR="keycloak_secrets"
+IDS_FILE=""
 
+usage() {
+  sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
+  exit "${1:-0}"
+}
+
+while getopts ":f:o:h" opt; do
+  case "$opt" in
+    f) IDS_FILE="$OPTARG" ;;
+    o) OUTPUT_DIR="$OPTARG" ;;
+    h) usage 0 ;;
+    \?) echo "Opción desconocida: -$OPTARG" >&2; usage 1 ;;
+    :)  echo "La opción -$OPTARG requiere un argumento." >&2; usage 1 ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+# Comprobar dependencias
+for dep in lpass jq; do
+  command -v "$dep" >/dev/null 2>&1 || { echo "[ERROR] Falta la dependencia: $dep" >&2; exit 1; }
+done
+
+# ─── Recolectar los IDs ────────────────────────────────────────────────────────
+ids=()
+if [ -n "$IDS_FILE" ]; then
+  [ -f "$IDS_FILE" ] || { echo "[ERROR] No existe el fichero: $IDS_FILE" >&2; exit 1; }
+  while IFS= read -r line; do
+    [ -n "$line" ] && ids+=("$line")
+  done < "$IDS_FILE"
+elif [ "$#" -gt 0 ]; then
+  ids=("$@")
+elif [ ! -t 0 ]; then
+  # Leer de stdin si viene por pipe
+  while IFS= read -r line; do
+    [ -n "$line" ] && ids+=("$line")
+  done
+fi
+
+if [ "${#ids[@]}" -eq 0 ]; then
+  echo "[ERROR] No se han proporcionado IDs (usa -f, argumentos o stdin)." >&2
+  usage 1
+fi
+
+mkdir -p "$OUTPUT_DIR"
+
+# ─── Exportar cada entrada ─────────────────────────────────────────────────────
 for id in "${ids[@]}"; do
-  name=$(lpass ls | grep "$id" | sed 's/ \[id:.*$//' | sed 's/^Shared-KEYCLOAK\///' | tr '/' '_' | tr ' ' '_' | tr '[' '_' | tr ']' '_' | sed 's/__*/_/g' | sed 's/_$//')
+  # Nombre de fichero derivado del nombre de la entrada en LastPass, saneado.
+  name=$(lpass ls | grep "$id" \
+    | sed 's/ \[id:.*$//' \
+    | sed 's#^Shared-KEYCLOAK/##' \
+    | tr '/ []' '____' \
+    | sed 's/__*/_/g; s/_$//')
 
-  lpass show "$id" | grep -v "^Language:" | grep -v "^NoteType:" | awk -F': ' 'NF==2 && !/^\[id:/ {print "\"" $1 "\": \"" $2 "\""}' | paste -sd ',' | sed 's/^/{/' | sed 's/$/}/' | jq '.' > "keycloak_secrets/${name}.json"
+  if [ -z "$name" ]; then
+    echo "[WARN] No se encontró ninguna entrada con el ID $id; se omite." >&2
+    continue
+  fi
+
+  lpass show "$id" \
+    | grep -v "^Language:" \
+    | grep -v "^NoteType:" \
+    | awk -F': ' 'NF==2 && !/^\[id:/ {print "\"" $1 "\": \"" $2 "\""}' \
+    | paste -sd ',' \
+    | sed 's/^/{/; s/$/}/' \
+    | jq '.' > "$OUTPUT_DIR/${name}.json"
 
   echo "Exported: ${name}.json"
 done
 
-echo "Done! All secrets exported to keycloak_secrets/"
+echo "Done! All secrets exported to $OUTPUT_DIR/"

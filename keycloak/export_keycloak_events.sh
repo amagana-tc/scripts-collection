@@ -20,8 +20,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib/kc_common.sh"
 
 # ─── Valores por defecto ───────────────────────────────────────────────────────
-KC_URL="https://kcdm2.loyaltysp.es:8443"
-REALM="DMA_9cg9hra0Y"
+# Ajusta estos valores o pásalos por flag (--url, --realm).
+KC_URL="${KC_URL:-https://keycloak.example.com:8443}"
+REALM="${REALM:-my-realm}"
 AUTH_REALM="master"
 CLIENT_ID="admin-cli"
 USERNAME=""

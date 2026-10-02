@@ -4,7 +4,7 @@ Colección ordenada de scripts propios (shell y zsh) agrupados por dominio.
 Se han seleccionado los más reutilizables, saneando credenciales y datos internos.
 
 > **Nota de seguridad:** los scripts no contienen credenciales, tokens, URLs
-> internas ni datos personales. Los valores sensibles o específicos de un entorno
+> internas ni datos personales: los valores sensibles o específicos de un entorno
 > se han sustituido por variables de entorno o placeholders (`YOUR_...`,
 > `example.com`, `my-profile`, `<...>`). Revisa y ajusta la configuración antes de
 > usarlos.
@@ -42,9 +42,13 @@ aws-utils/                     Utilidades de AWS, por tipología
 │   ├── delete_secrets.sh         Borra secretos (filtro por prefijo/sufijo o
 │   │                             todos), con confirmación
 │   └── rename_secret.sh          Renombra un secreto (crear + borrar)
-└── sso/
-    └── awsctx.zsh                Función zsh: cambia de perfil AWS SSO (fzf) y
-                                  renueva la sesión si ha caducado
+└── sso/                           Login AWS SSO + LastPass (ver sso/README.md)
+    ├── login.zsh                 Punto de entrada: login/logout de LastPass y
+    │                             AWS SSO en un solo comando (`login`)
+    ├── awsctx.zsh                Función zsh: cambia de perfil AWS SSO (fzf) y
+    │                             renueva la sesión si ha caducado
+    └── install.zsh               Registra el comando global `login` en ~/.zshrc
+                                  (idempotente)
 
 credentials/                   Proveedores de credenciales (dado un nombre,
 │                              devuelven la contraseña por stdout; -j para JSON)
@@ -68,7 +72,15 @@ keycloak/                      Keycloak / OIDC (admin API)
 ├── keycloak_users_export.sh   Exporta usuarios de un realm (o de todos)
 ├── list_users.sh              Lista usernames de un realm (uno por línea, stdout)
 ├── reset_passwords.sh         Resetea contraseñas de una lista de usuarios
-└── force_password_update.sh   Fuerza UPDATE_PASSWORD (lista de usuarios o todos)
+├── force_password_update.sh   Fuerza UPDATE_PASSWORD (lista de usuarios o todos)
+├── force_email_verification.sh  Fuerza re-verificación de email (emailVerified=
+│                              false + VERIFY_EMAIL); lista (-f) o todos (-a),
+│                              con opción de enviar el email ya (-s)
+├── export_keycloak_events.sh  Exporta eventos (login/admin) a CSV, con filtros
+│                              por fecha, tipo, usuario, cliente, IP, etc.
+└── export_keycloak_secrets.sh Exporta entradas de LastPass a JSON (una por
+                               entrada); los IDs se pasan por fichero (-f),
+                               argumentos o stdin (no van hardcodeados)
 
 misc/                          (reservada para scripts varios)
 ```
